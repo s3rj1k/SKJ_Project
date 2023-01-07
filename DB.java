@@ -4,26 +4,30 @@ import java.util.concurrent.ConcurrentHashMap;
 class DB {
     Map<Integer, Integer> db = new ConcurrentHashMap<>();
 
-    Boolean existsLocally(Integer key) {
+    Boolean exists(Integer key) {
         try {
             return this.db.containsKey(key);
         } catch (Exception e) {
-            System.err.printf("Failed to check local key existence `%d`: %s\n", key, e.getMessage());
+            System.err.printf("* Failed to check local key existence `%d`: %s\n", key, e.getMessage());
             return false;
         }
     }
 
-    Boolean newLocalValue(Integer key, Integer value) {
+    Boolean newValue(Integer key, Integer value) {
         try {
             this.db.put(key, value);
             return true;
         } catch (Exception e) {
-            System.err.printf("Failed to create new local value `%d:%d`: %s\n", key, value, e.getMessage());
+            System.err.printf("* Failed to create new local value `%d`=`%d`: %s\n", key, value, e.getMessage());
             return false;
         }
     }
 
-    Boolean setLocalValue(Integer key, Integer value) {
+    Boolean newValue(KV kv) {
+        return newValue(kv.key, kv.value);
+    }
+
+    Boolean setValue(Integer key, Integer value) {
         try {
             if (this.db.containsKey(key)) {
                 this.db.put(key, value);
@@ -32,23 +36,25 @@ class DB {
                 return false;
             }
         } catch (Exception e) {
-            System.err.printf("Failed to set local value `%d:%d`: %s\n", key, value, e.getMessage());
+            System.err.printf("* Failed to set local value `%d`=`%d`: %s\n", key, value, e.getMessage());
             return false;
         }
     }
 
-    Integer getLocalValue(Integer key) {
+    Boolean setValue(KV kv) {
+        return setValue(kv.key, kv.value);
+    }
+
+    Integer getValue(Integer key) {
         try {
             return this.db.getOrDefault(key, null);
         } catch (Exception e) {
-            System.err.printf("Failed to get local value `%d`: %s\n", key, e.getMessage());
+            System.err.printf("* Failed to get local value `%d`: %s\n", key, e.getMessage());
             return null;
         }
     }
 
-    KV getLocalMax() {
-        KV kv = new KV();
-
+    KV getMax() {
         Integer maxKey = null;
         Integer maxValue = null;
 
@@ -60,13 +66,10 @@ class DB {
             }
         }
 
-        kv.set(maxKey, maxValue);
-        return kv;
+        return new KV(maxKey, maxValue);
     }
 
-    KV getLocalMin() {
-        KV kv = new KV();
-
+    KV getMin() {
         Integer minKey = null;
         Integer minValue = null;
 
@@ -78,17 +81,6 @@ class DB {
             }
         }
 
-        kv.set(minKey, minValue);
-        return kv;
-    }
-
-    public static class KV {
-        public Integer key;
-        public Integer value;
-
-        public void set(Integer key, Integer value) {
-            this.key = key;
-            this.value = value;
-        }
+        return new KV(minKey, minValue);
     }
 }

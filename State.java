@@ -7,14 +7,15 @@ import java.util.concurrent.ConcurrentHashMap;
 class State {
     public static final Integer heartbeatInterval = 15 * 1000; // ms
     public static final Integer clientConnectionTimeout = 5 * 1000; // ms
+    public static final Integer requestIdTTL = 300 * 1000; // ms
 
     static final String tcpPortCLIFlag = "-tcpport";
     static final String recordCLIFlag = "-record";
     static final String connectCLIFlag = "-connect";
-
-    public Integer tcpPort;
     public DB db = new DB();
+    public ExpiringStringSet RecursiveRequestsTracking = new ExpiringStringSet(requestIdTTL);
     public Map<InetSocketAddress, Boolean> nodes = new ConcurrentHashMap<>();
+    private Integer tcpPort;
 
     public static InetSocketAddress parseAddress(String address) throws ApplicationException {
         try {
@@ -30,6 +31,10 @@ class State {
         }
     }
 
+    public Integer tcpPort() {
+        return this.tcpPort;
+    }
+
     public void init(String[] args) throws ApplicationException {
         System.setProperty("java.net.preferIPv4Stack", "true"); // Disable IPv6
 
@@ -40,7 +45,7 @@ class State {
                 if (args.length >= (i + 1)) {
                     String param = args[i + 1];
                     try {
-                        tcpPort = Integer.parseInt(param);
+                        this.tcpPort = Integer.parseInt(param);
                         IsTCPPortValueProvided = true;
                     } catch (NumberFormatException e) {
                         throw new ApplicationException(String.format("Invalid value for `%s` provided -> `%s`.", tcpPortCLIFlag, param));
@@ -53,15 +58,13 @@ class State {
             if (args[i].equals(recordCLIFlag)) {
                 if (args.length >= (i + 1)) {
                     String record = args[i + 1].trim();
-                    Integer key, val;
                     try {
-                        key = Record.parseKey(record);
-                        val = Record.parseValue(record);
-                    } catch (NumberFormatException e) {
+                        KV kv = new KV(record);
+                        if (!db.newValue(kv)) {
+                            throw new ApplicationException(String.format("Failed to store `%s` value into database.", record));
+                        }
+                    } catch (IllegalArgumentException e) {
                         throw new ApplicationException(String.format("Invalid value for `%s` provided -> `%s`.", recordCLIFlag, record));
-                    }
-                    if (!db.newLocalValue(key, val)) {
-                        throw new ApplicationException(String.format("Failed to store `%s` value into database.", record));
                     }
                 } else {
                     throw new ApplicationException(String.format("No value for `%s` provided.", recordCLIFlag));

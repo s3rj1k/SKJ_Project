@@ -26,7 +26,7 @@ java DatabaseClient -gateway localhost:9003 -operation set-value 7:7
 java DatabaseClient -gateway localhost:9004 -operation set-value 1:1
 sleep 1
 java DatabaseClient -gateway localhost:9004 -operation get-max
-java DatabaseClient -gateway localhost:9003 -operation get-max
+java DatabaseClient -gateway localhost:9003 -operation get-min
 sleep 1
 java DatabaseClient -gateway localhost:9003 -operation find-key 7
 java DatabaseClient -gateway localhost:9004 -operation find-key 1

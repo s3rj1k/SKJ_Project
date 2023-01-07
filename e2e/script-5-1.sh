@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start 7 network nodes, then allocate the resources 4 times
+# Start 5 network nodes, then allocate the resources 4 times
 java DatabaseNode -tcpport 9000 -record 1:8 &
 sleep 1
 java DatabaseNode -tcpport 9001 -connect localhost:9000 -record 2:7 &
@@ -18,7 +18,7 @@ sleep 1
 java DatabaseClient -gateway localhost:9002 -operation terminate
 sleep 1
 java DatabaseClient -gateway localhost:9001 -operation get-max
-java DatabaseClient -gateway localhost:9001 -operation get-max # !!! I assume that this is an error, it should send `get-min`
+java DatabaseClient -gateway localhost:9001 -operation get-min
 sleep 1
 
 java DatabaseClient -gateway localhost:9000 -operation terminate

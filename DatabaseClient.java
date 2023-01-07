@@ -20,16 +20,17 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
 
 public class DatabaseClient {
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
         // parameter storage
         String gateway = null;
         int port = 0;
-        String identifier = null;
         String command = null;
+        boolean verbose = true;
 
         // Parameter scan loop
         for (int i = 0; i < args.length; i++) {
@@ -47,24 +48,38 @@ public class DatabaseClient {
             }
         }
 
+        if ((System.getenv("verbose") != null) && (System.getenv("verbose").equalsIgnoreCase("false"))) {
+            verbose = false;
+        }
+
         // communication socket and streams
         Socket netSocket;
         PrintWriter out;
         BufferedReader in;
         try {
-            System.out.println(""); // adding this for more readability
-            System.out.println("Connecting with: " + gateway + " at port " + port);
+            if (verbose) {
+                System.out.println(); // to visually separate commands
+                System.out.println("Connecting with: " + gateway + " at port " + port);
+            }
+
             netSocket = new Socket(gateway, port);
             out = new PrintWriter(netSocket.getOutputStream(), true);
             in = new BufferedReader(new InputStreamReader(netSocket.getInputStream()));
-            System.out.println("Connected");
 
-            System.out.println("Sending: " + command);
+            if (verbose) {
+                System.out.println("Connected");
+                System.out.println("Sending: " + command);
+            }
+
             out.println(command);
             // Read and print out the response
             String response;
             while ((response = in.readLine()) != null) {
-                System.out.println(response);
+                if (verbose) {
+                    System.out.println(response);
+                } else {
+                    System.out.printf("{%s} -> [%s] -> %s\n", new InetSocketAddress(gateway, port), command, response);
+                }
             }
 
             // Terminate - close all the streams and the socket

@@ -1,101 +1,156 @@
 class Operation {
-    public static final String operationSetLocalValue = "set-local-value";
     public static final String operationSetValue = "set-value";
-    public static final String operationGetLocalValue = "get-local-value";
     public static final String operationGetValue = "get-value";
-    public static final String operationFindLocalKey = "find-local-key";
     public static final String operationFindKey = "find-key";
-    public static final String operationGetLocalMax = "get-local-max";
     public static final String operationGetMax = "get-max";
-    public static final String operationGetLocalMin = "get-local-min";
     public static final String operationGetMin = "get-min";
     public static final String operationNewRecord = "new-record";
-    public static final String operationUnregister = "unregister";
     public static final String operationTerminate = "terminate";
-    public static final String operationQuit = "quit";
+
     public static final String operationPing = "ping";
     public static final String operationRegister = "register";
+    public static final String operationUnregister = "unregister";
     public static final String operationListRemotes = "list-remotes";
+
+    public static final String[] knownOperations = {
+            operationFindKey,
+            operationGetMax,
+            operationGetMin,
+            operationGetValue,
+            operationNewRecord,
+            operationSetValue,
+            operationTerminate,
+            operationListRemotes,
+            operationPing,
+            operationRegister,
+            operationUnregister,
+    };
+
+    public static final String[] knownRecursiveOperations = {
+            operationFindKey,
+            operationGetMax,
+            operationGetMin,
+            operationGetValue,
+            operationSetValue,
+    };
 
     public static final String resultOk = "OK";
     public static final String resultError = "ERROR";
+    public static final String resultSeen = "SEEN";
+    public static final String resultEmpty = "EMPTY";
 
+    public static final String[] resultNotOk = {
+            resultEmpty,
+            resultError,
+            resultSeen,
+    };
+
+    public static final char parameterDelimiter = ':';
+    public static final char beginIDWrap = '[';
+    public static final char endIDWrap = ']';
+
+    public String id;
     public String operation;
     public String parameter;
     public Integer key;
     public Integer value;
 
-    public void parse(String data) throws ApplicationException {
-        data = data.trim();
+    public Operation(String value) throws ApplicationException {
         try {
-            if (data.startsWith(operationSetLocalValue + " ")) {
-                String param = data.substring(operationSetLocalValue.length()).trim();
-                this.operation = operationSetLocalValue;
-                this.parameter = param;
-                this.key = Record.parseKey(param);
-                this.value = Record.parseValue(param);
-            } else if (data.startsWith(operationSetValue + " ")) {
-                String param = data.substring(operationSetValue.length()).trim();
-                this.operation = operationSetValue;
-                this.parameter = param;
-                this.key = Record.parseKey(param);
-                this.value = Record.parseValue(param);
-            } else if (data.startsWith(operationGetLocalValue + " ")) {
-                String param = data.substring(operationGetLocalValue.length()).trim();
-                this.operation = operationGetLocalValue;
-                this.parameter = param;
-                this.key = Integer.parseInt(param);
-            } else if (data.startsWith(operationGetValue + " ")) {
-                String param = data.substring(operationGetValue.length()).trim();
-                this.operation = operationGetValue;
-                this.parameter = param;
-                this.key = Integer.parseInt(param);
-            } else if (data.startsWith(operationFindLocalKey + " ")) {
-                String param = data.substring(operationFindLocalKey.length()).trim();
-                this.operation = operationFindLocalKey;
-                this.parameter = param;
-                this.key = Integer.parseInt(param);
-            } else if (data.startsWith(operationFindKey + " ")) {
-                String param = data.substring(operationFindKey.length()).trim();
-                this.operation = operationFindKey;
-                this.parameter = param;
-                this.key = Integer.parseInt(param);
-            } else if (data.equals(operationGetLocalMax)) {
-                this.operation = operationGetLocalMax;
-            } else if (data.equals(operationGetMax)) {
-                this.operation = operationGetMax;
-            } else if (data.equals(operationGetLocalMin)) {
-                this.operation = operationGetLocalMin;
-            } else if (data.equals(operationGetMin)) {
-                this.operation = operationGetMin;
-            } else if (data.startsWith(operationNewRecord + " ")) {
-                String param = data.substring(operationNewRecord.length()).trim();
-                this.operation = operationNewRecord;
-                this.parameter = param;
-                this.key = Record.parseKey(param);
-                this.value = Record.parseValue(param);
-            } else if (data.startsWith(operationUnregister + " ")) {
-                String param = data.substring(operationUnregister.length()).trim();
-                this.operation = operationUnregister;
-                this.key = Integer.parseInt(param);
-            } else if (data.equals(operationTerminate)) {
-                this.operation = operationTerminate;
-            } else if (data.equals(operationQuit)) {
-                this.operation = operationQuit;
-            } else if (data.equals(operationPing)) {
-                this.operation = operationPing;
-            } else if (data.startsWith(operationRegister + " ")) {
-                String param = data.substring(operationRegister.length()).trim();
-                this.operation = operationRegister;
-                this.parameter = param;
-                this.key = Integer.parseInt(param);
-            } else if (data.equals(operationListRemotes)) {
-                this.operation = operationListRemotes;
-            } else {
-                throw new ApplicationException(String.format("Unknown operation requested -> `%s`.", data));
+            this.id = null;
+            this.operation = null;
+            this.parameter = null;
+            this.key = null;
+            this.value = null;
+
+            String data = value.trim();
+
+            if (data.charAt(0) == beginIDWrap) {
+                for (int i = 1; i < data.length(); i++) {
+                    if (data.charAt(i) == endIDWrap) {
+                        this.id = data.substring(1, i).trim();
+
+                        if ((i + 1) > data.length()) {
+                            throw new ApplicationException(String.format("Unknown operation (ID parse) -> `%s`.", value));
+                        }
+
+                        data = data.substring(i + 1).trim();
+                        break;
+                    }
+                }
             }
-        } catch (IllegalArgumentException e) {
-            throw new ApplicationException(String.format("Invalid value in operation parameters -> `%s`.", data));
+
+            for (int i = 0; i < knownOperations.length; i++) {
+                if (data.startsWith(knownOperations[i])) {
+                    this.operation = knownOperations[i];
+
+                    try {
+                        this.parameter = data.substring(knownOperations[i].length() + 1).trim();
+                    } catch (Exception e) {
+                        this.parameter = null;
+                    }
+
+                    break;
+                }
+            }
+
+            if (this.operation == null) {
+                throw new ApplicationException(String.format("Unknown operation -> `%s`.", value));
+            }
+
+            if ((this.parameter == null) || (this.parameter.length() == 0)) {
+                return;
+            }
+
+            int delimiterIndex = this.parameter.indexOf(parameterDelimiter);
+
+            try {
+                if (delimiterIndex > 0) {
+                    this.key = Integer.parseInt(this.parameter.substring(0, delimiterIndex));
+
+                    if ((delimiterIndex + 1) > this.parameter.length()) {
+                        throw new ApplicationException(String.format("Unknown operation (parameter parse) -> `%s`.", value));
+                    }
+
+                    this.value = Integer.parseInt(this.parameter.substring(delimiterIndex + 1));
+                } else if (delimiterIndex < 0) {
+                    this.key = Integer.parseInt(this.parameter);
+                }
+            } catch (NumberFormatException e) {
+                throw new ApplicationException(String.format("Invalid value in operation parameters -> `%s`.", value));
+            }
+        } catch (IndexOutOfBoundsException e) {
+            throw new ApplicationException(String.format("Internal unhandled error, IndexOutOfBounds for -> `%s`.", value));
         }
+    }
+
+    @Override
+    public String toString() {
+        if (this.operation == null) {
+            return null;
+        }
+
+        StringBuilder sb = new StringBuilder();
+
+        if (this.id != null) {
+            sb.append(beginIDWrap);
+            sb.append(this.id);
+            sb.append(endIDWrap);
+            sb.append(" ");
+        }
+
+        sb.append(this.operation);
+
+        if (this.key != null) {
+            sb.append(" ");
+            sb.append(this.key);
+
+            if (this.value != null) {
+                sb.append(parameterDelimiter);
+                sb.append(this.value);
+            }
+        }
+
+        return sb.toString();
     }
 }

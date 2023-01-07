@@ -5,6 +5,8 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Arrays;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -15,7 +17,7 @@ public class DatabaseNode {
         try {
             state.init(args);
         } catch (Exception e) {
-            System.err.printf("%s\n", e.getMessage());
+            System.err.println(e.getMessage());
             System.exit(1);
         }
 
@@ -30,10 +32,10 @@ public class DatabaseNode {
                 }
 
                 try {
-                    verify(node);
+                    verify(node, null);
                     state.nodes.put(node, true);
                 } catch (Exception e) {
-                    System.err.printf("%s\n", e.getMessage());
+                    System.err.println(e.getMessage());
                 }
             }
         }
@@ -46,13 +48,13 @@ public class DatabaseNode {
             final ExecutorService service = Executors.newCachedThreadPool();
             ServerSocket server;
 
-            server = new ServerSocket(state.tcpPort);
+            server = new ServerSocket(state.tcpPort());
             server.setReuseAddress(true);
 
             System.out.printf("Server started at TCP port: %d\n", server.getLocalPort());
 
             for (InetSocketAddress node : state.nodes.keySet()) {
-                service.submit(new registerSelf(node, server));
+                service.submit(new register(node, server));
             }
 
             Thread shutdownHook = new Thread(() -> {
@@ -84,8 +86,8 @@ public class DatabaseNode {
         }
     }
 
-    public static void verify(InetSocketAddress address) throws ApplicationException {
-        if (!Client.ping(address.getHostName(), address.getPort())) {
+    public static void verify(InetSocketAddress address, String from) throws ApplicationException {
+        if (!Command.ping(address.getHostName(), address.getPort(), from)) {
             throw new ApplicationException(String.format("Failed to verify remote node -> %s", address));
         }
     }
@@ -103,11 +105,11 @@ public class DatabaseNode {
         }
     }
 
-    public static class registerSelf implements Runnable {
+    public static class register implements Runnable {
         private final InetSocketAddress node;
         private final ServerSocket server;
 
-        public registerSelf(InetSocketAddress node, ServerSocket server) {
+        public register(InetSocketAddress node, ServerSocket server) {
             this.node = node;
             this.server = server;
         }
@@ -115,14 +117,18 @@ public class DatabaseNode {
         public void run() {
             waitForReadiness(server);
 
+            String localAddress = new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString().startsWith("/")
+                    ? new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString().substring(1)
+                    : new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString();
+
             try {
-                if (Client.registerSelf(this.node.getHostName(), this.node.getPort(), server.getLocalPort())) {
-                    System.out.printf("Succeeded `registerSelf` operation, remote node (host=`%s`, port=`%d`), self TCP port %d.\n", this.node.getHostName(), this.node.getPort(), server.getLocalPort());
+                if (Command.register(this.node.getHostName(), this.node.getPort(), server.getLocalPort(), localAddress)) {
+                    System.out.printf("Succeeded `register` operation on host=`%s`, port=`%d`, self TCP port %d.\n", this.node.getHostName(), this.node.getPort(), server.getLocalPort());
                 } else {
-                    System.err.printf("Failed `registerSelf` operation, remote node (host=`%s`, port=`%d`).\n", this.node.getHostName(), this.node.getPort());
+                    System.err.printf("Failed `register` operation on host=`%s`, port=`%d`.\n", this.node.getHostName(), this.node.getPort());
                 }
             } catch (Exception e) {
-                System.err.printf("%s\n", e.getMessage());
+                System.err.println(e.getMessage());
             }
         }
     }
@@ -137,18 +143,22 @@ public class DatabaseNode {
         public void run() {
             waitForReadiness(server);
 
+            String localAddress = new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString().startsWith("/")
+                    ? new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString().substring(1)
+                    : new InetSocketAddress(server.getInetAddress().getHostAddress(), server.getLocalPort()).toString();
+
             while (!server.isClosed()) {
                 for (InetSocketAddress node : state.nodes.keySet()) {
                     sleep(State.heartbeatInterval);
 
                     try {
-                        verify(node);
+                        verify(node, localAddress);
                         if (state.nodes.replace(node, false, true)) {
-                            System.out.printf("Heartbeat -> remote node (host=`%s`, port=`%d`), online\n", node.getHostName(), node.getPort());
+                            System.out.printf("Heartbeat node online -> host=`%s`, port=`%d`\n", node.getHostName(), node.getPort());
                         }
                     } catch (Exception e) {
                         if (state.nodes.replace(node, true, false)) {
-                            System.out.printf("Heartbeat -> remote node (host=`%s`, port=`%d`), offline\n", node.getHostName(), node.getPort());
+                            System.out.printf("Heartbeat node offline -> host=`%s`, port=`%d`\n", node.getHostName(), node.getPort());
                         }
                     }
                 }
@@ -163,6 +173,15 @@ public class DatabaseNode {
         public ClientHandler(ServerSocket server, Socket client) {
             this.server = server;
             this.client = client;
+        }
+
+        private void closeClientConnection(PrintWriter out, BufferedReader in, Socket client) {
+            try {
+                out.close();
+                in.close();
+                client.close();
+            } catch (Exception ignored) {
+            }
         }
 
         public void run() {
@@ -191,41 +210,52 @@ public class DatabaseNode {
                             ? client.getInetAddress().toString().substring(1)
                             : client.getInetAddress().toString();
 
-                    Operation op = new Operation();
+                    Operation op;
 
                     try {
-                        op.parse(line);
+                        op = new Operation(line);
                     } catch (Exception e) {
                         System.err.printf("%s ] %s\n", remoteClientAddress, e.getMessage());
-                        out.printf("%s\n", Operation.resultError);
+                        out.println(Operation.resultError);
+                        closeClientConnection(out, in, client);
 
-                        // client connection needs to be closed
-                        try {
-                            out.close();
-                            in.close();
-                            client.close();
-                        } catch (Exception ignored) {
+                        break;
+                    }
+
+                    // Set known request ID for DEBUG
+                    // state.RecursiveRequestsTracking.set("ec58cb76-fbb0-4d71-8fc1-0b405ed49458");
+
+                    if (Arrays.asList(Operation.knownRecursiveOperations).contains(op.operation)) {
+                        if (op.id == null) {
+                            op.id = UUID.randomUUID().toString();
+                        } else {
+                            try {
+                                op.id = UUID.fromString(op.id).toString();
+                            } catch (Exception e) {
+                                System.err.printf("%s ] Invalid request ID, not UUID: %s\n", remoteClientAddress, e.getMessage());
+                                out.println(Operation.resultError);
+                                closeClientConnection(out, in, client);
+
+                                break;
+                            }
+
+                            if (state.RecursiveRequestsTracking.contains(op.id)) {
+                                System.out.printf("%s ] Already seen request ID: %s\n", remoteClientAddress, op.id);
+                                out.println(Operation.resultSeen);
+                                closeClientConnection(out, in, client);
+
+                                break;
+                            }
                         }
 
-                        continue;
+                        state.RecursiveRequestsTracking.set(op.id);
                     }
 
                     switch (op.operation) {
-                        case Operation.operationSetLocalValue: {
-                            if (state.db.setLocalValue(op.key, op.value)) {
-                                System.out.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
-                            } else {
-                                System.err.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
-                            }
-
-                            break;
-                        }
                         case Operation.operationSetValue: {
                             int OKCount = 0;
 
-                            if (state.db.setLocalValue(op.key, op.value)) {
+                            if (state.db.setValue(op.key, op.value)) {
                                 OKCount++;
                             }
 
@@ -235,41 +265,31 @@ public class DatabaseNode {
                                 }
 
                                 try {
-                                    if (Client.setLocalValue(node.getHostName(), node.getPort(), op.key, op.value)) {
+                                    if (Command.setValue(node.getHostName(), node.getPort(), op, localAddress)) {
                                         OKCount++;
                                     }
                                 } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
+                                    System.err.println(e.getMessage());
                                 }
                             }
 
                             if (OKCount > 0) {
-                                System.out.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                                out.println(Operation.resultOk);
                             } else {
-                                System.err.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
-                            }
-
-                            break;
-                        }
-                        case Operation.operationGetLocalValue: {
-                            Integer value = state.db.getLocalValue(op.key);
-                            if (value != null) {
-                                System.out.printf("%s ] %s %s -> %s:%s\n", remoteClientAddress, op.operation, op.key, op.key, value);
-                                out.printf("%s:%s\n", op.key, value);
-                            } else {
-                                System.err.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationGetValue: {
-                            Integer value = state.db.getLocalValue(op.key);
+                            Integer value = state.db.getValue(op.key);
                             if (value != null) {
-                                System.out.printf("%s ] %s %s -> %s:%s\n", remoteClientAddress, op.operation, op.key, op.key, value);
-                                out.printf("%s:%s\n", op.key, value);
+                                String result = String.format("%s%s%s", op.key, Operation.parameterDelimiter, value);
+
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, result);
+                                out.println(result);
 
                                 break;
                             }
@@ -282,41 +302,30 @@ public class DatabaseNode {
                                 }
 
                                 try {
-                                    DB.KV kv = Client.getLocalValue(node.getHostName(), node.getPort(), op.key);
+                                    KV kv = Command.getValue(node.getHostName(), node.getPort(), op, localAddress);
                                     if (kv != null) {
-                                        System.out.printf("%s ] %s %s -> %s:%s\n", remoteClientAddress, op.operation, op.key, kv.key, kv.value);
-                                        out.printf("%s:%s\n", kv.key, kv.value);
+                                        System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, kv);
+                                        out.println(kv);
                                         OKCount++;
 
                                         break;
                                     }
                                 } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
+                                    System.err.println(e.getMessage());
                                 }
                             }
 
                             if (OKCount == 0) {
-                                System.err.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
-                            }
-
-                            break;
-                        }
-                        case Operation.operationFindLocalKey: {
-                            if (state.db.existsLocally(op.key)) {
-                                System.out.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, localAddress);
-                                out.printf("%s\n", localAddress);
-                            } else {
-                                System.err.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationFindKey: {
-                            if (state.db.existsLocally(op.key)) {
-                                System.out.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, localAddress);
-                                out.printf("%s\n", localAddress);
+                            if (state.db.exists(op.key)) {
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, localAddress);
+                                out.println(localAddress);
 
                                 break;
                             }
@@ -329,42 +338,30 @@ public class DatabaseNode {
                                 }
 
                                 try {
-                                    String value = Client.findLocalKey(node.getHostName(), node.getPort(), op.key);
+                                    String value = Command.findKey(node.getHostName(), node.getPort(), op, localAddress);
                                     if (value != null) {
-                                        System.out.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, value);
-                                        out.printf("%s\n", value);
+                                        System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, value);
+                                        out.println(value);
                                         OKCount++;
 
                                         break;
                                     }
                                 } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
+                                    System.err.println(e.getMessage());
                                 }
                             }
 
                             if (OKCount == 0) {
-                                System.err.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
-                            }
-
-                            break;
-                        }
-                        case Operation.operationGetLocalMax: {
-                            DB.KV kv = state.db.getLocalMax();
-                            if (kv != null && kv.key != null && kv.value != null) {
-                                System.out.printf("%s ] %s -> %s:%s\n", remoteClientAddress, op.operation, kv.key, kv.value);
-                                out.printf("%s:%s\n", kv.key, kv.value);
-                            } else {
-                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationGetMax: {
-                            DB.KV max = null;
+                            KV max = null;
                             {
-                                DB.KV kv = state.db.getLocalMax();
+                                KV kv = state.db.getMax();
                                 if (kv != null && kv.key != null && kv.value != null) {
                                     max = kv;
                                 }
@@ -376,7 +373,7 @@ public class DatabaseNode {
                                 }
 
                                 try {
-                                    DB.KV kv = Client.getLocalMax(node.getHostName(), node.getPort());
+                                    KV kv = Command.getMax(node.getHostName(), node.getPort(), op, localAddress);
                                     if (kv != null && kv.key != null && kv.value != null) {
                                         if (max != null && max.key != null && max.value != null) {
                                             if (max.value < kv.value) {
@@ -387,36 +384,24 @@ public class DatabaseNode {
                                         }
                                     }
                                 } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
+                                    System.err.println(e.getMessage());
                                 }
                             }
 
                             if (max != null && max.key != null && max.value != null) {
-                                System.out.printf("%s ] %s -> %s:%s\n", remoteClientAddress, op.operation, max.key, max.value);
-                                out.printf("%s:%s\n", max.key, max.value);
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, max);
+                                out.println(max);
                             } else {
-                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
-                            }
-
-                            break;
-                        }
-                        case Operation.operationGetLocalMin: {
-                            DB.KV kv = state.db.getLocalMin();
-                            if (kv != null && kv.key != null && kv.value != null) {
-                                System.out.printf("%s ] %s -> %s:%s\n", remoteClientAddress, op.operation, kv.key, kv.value);
-                                out.printf("%s:%s\n", kv.key, kv.value);
-                            } else {
-                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationGetMin: {
-                            DB.KV min = null;
+                            KV min = null;
                             {
-                                DB.KV kv = state.db.getLocalMin();
+                                KV kv = state.db.getMin();
                                 if (kv != null && kv.key != null && kv.value != null) {
                                     min = kv;
                                 }
@@ -428,7 +413,7 @@ public class DatabaseNode {
                                 }
 
                                 try {
-                                    DB.KV kv = Client.getLocalMin(node.getHostName(), node.getPort());
+                                    KV kv = Command.getMin(node.getHostName(), node.getPort(), op, localAddress);
                                     if (kv != null && kv.key != null && kv.value != null) {
                                         if (min != null && min.key != null && min.value != null) {
                                             if (min.value > kv.value) {
@@ -439,27 +424,71 @@ public class DatabaseNode {
                                         }
                                     }
                                 } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
+                                    System.err.println(e.getMessage());
                                 }
                             }
 
                             if (min != null && min.key != null && min.value != null) {
-                                System.out.printf("%s ] %s -> %s:%s\n", remoteClientAddress, op.operation, min.key, min.value);
-                                out.printf("%s:%s\n", min.key, min.value);
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, min);
+                                out.println(min);
                             } else {
                                 System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationNewRecord: {
-                            if (state.db.newLocalValue(op.key, op.value)) {
-                                System.out.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
+                            if (state.db.newValue(op.key, op.value)) {
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                                out.println(Operation.resultOk);
                             } else {
-                                System.err.printf("%s ] %s %s:%s -> %s\n", remoteClientAddress, op.operation, op.key, op.value, Operation.resultError);
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
+                            }
+
+                            break;
+                        }
+                        case Operation.operationTerminate: {
+                            for (InetSocketAddress node : state.nodes.keySet()) {
+                                try {
+                                    if (Command.unregister(node.getHostName(), node.getPort(), server.getLocalPort(), localAddress)) {
+                                        System.out.printf("Succeeded `unregister` operation on host=`%s`, port=`%d`, self TCP port %d.\n", node.getHostName(), node.getPort(), server.getLocalPort());
+                                    } else {
+                                        System.err.printf("Failed `unregister` operation on host=`%s`, port=`%d`.\n", node.getHostName(), node.getPort());
+                                    }
+                                } catch (Exception e) {
+                                    System.err.println(e.getMessage());
+                                }
+                            }
+
+                            System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                            out.println(Operation.resultOk);
+
+                            closeClientConnection(out, in, client);
+                            try {
+                                System.exit(0);
+                            } catch (Exception ignored) {
+                            }
+
+                            break;
+                        }
+                        case Operation.operationPing: {
+                            System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                            out.println(Operation.resultOk);
+
+                            break;
+                        }
+                        case Operation.operationRegister: {
+                            InetSocketAddress node = new InetSocketAddress(remoteClientHost, op.key);
+                            try {
+                                verify(node, localAddress);
+                                state.nodes.put(node, true);
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                                out.println(Operation.resultOk);
+                            } catch (Exception e) {
+                                System.err.printf("%s ] %s -> %s: %s\n", remoteClientAddress, op, Operation.resultError, e.getMessage());
+                                out.println(Operation.resultError);
                             }
 
                             break;
@@ -468,103 +497,47 @@ public class DatabaseNode {
                             InetSocketAddress node = new InetSocketAddress(remoteClientHost, op.key);
                             try {
                                 state.nodes.remove(node);
-                                System.out.printf("%s ] %s %s -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
+                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultOk);
+                                out.println(Operation.resultOk);
                             } catch (Exception ignore) {
-                            }
-
-                            break;
-                        }
-                        case Operation.operationTerminate: {
-                            for (InetSocketAddress node : state.nodes.keySet()) {
-                                try {
-                                    if (Client.unregisterSelf(node.getHostName(), node.getPort(), server.getLocalPort())) {
-                                        System.out.printf("Succeeded `unregisterSelf` operation, remote node (host=`%s`, port=`%d`), self TCP port %d.\n", node.getHostName(), node.getPort(), server.getLocalPort());
-                                    } else {
-                                        System.err.printf("Failed `unregisterSelf` operation, remote node (host=`%s`, port=`%d`).\n", node.getHostName(), node.getPort());
-                                    }
-                                } catch (Exception e) {
-                                    System.err.printf("%s\n", e.getMessage());
-                                }
-                            }
-
-                            System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultOk);
-                            out.printf("%s\n", Operation.resultOk);
-
-                            try {
-                                out.close();
-                                in.close();
-                                client.close();
-                                System.exit(0);
-                            } catch (Exception ignored) {
-                            }
-
-                            break;
-                        }
-                        case Operation.operationQuit: {
-                            System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultOk);
-                            out.printf("%s\n", Operation.resultOk);
-
-                            try {
-                                out.close();
-                                in.close();
-                                client.close();
-                            } catch (Exception ignored) {
-                            }
-
-                            break;
-                        }
-                        case Operation.operationPing: {
-                            System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultOk);
-                            out.printf("%s\n", Operation.resultOk);
-
-                            break;
-                        }
-                        case Operation.operationRegister: {
-                            InetSocketAddress node = new InetSocketAddress(remoteClientHost, op.key);
-                            try {
-                                verify(node);
-                                state.nodes.put(node, true);
-                                System.out.printf("%s ] %s %d -> %s\n", remoteClientAddress, op.operation, op.key, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
-                            } catch (Exception e) {
-                                System.err.printf("%s ] %s %s -> %s (%s)\n", remoteClientAddress, op.operation, op.key, Operation.resultError, e.getMessage());
-                                out.printf("%s\n", Operation.resultError);
+                                System.err.printf("%s ] %s -> %s\n", remoteClientAddress, op, Operation.resultError);
+                                out.println(Operation.resultError);
                             }
 
                             break;
                         }
                         case Operation.operationListRemotes: {
+                            StringBuilder sb = new StringBuilder();
+
                             for (InetSocketAddress node : state.nodes.keySet()) {
                                 if (!state.nodes.get(node)) {
                                     continue;
                                 }
-                                System.out.printf("%s ] %s -> host=`%s`, port=`%d`\n", remoteClientAddress, op.operation, node.getHostName(), node.getPort());
-                                out.printf("host=`%s`, port=`%d`\n", node.getHostName(), node.getPort());
+                                System.out.printf("%s ] %s -> host=`%s`, port=`%d`\n", remoteClientAddress, op, node.getHostName(), node.getPort());
+
+                                sb.append(node);
+                                sb.append(" ");
                             }
 
-                            if (state.nodes.size() == 0) {
-                                System.out.printf("%s ] %s -> %s\n", remoteClientAddress, op.operation, Operation.resultOk);
-                                out.printf("%s\n", Operation.resultOk);
+                            String result = sb.toString().trim();
+                            if (result.length() == 0) {
+                                out.println(Operation.resultEmpty);
+                            } else {
+                                out.println(result);
                             }
 
                             break;
                         }
                         default: {
                             System.err.printf("%s ] %s -> %s\n", remoteClientAddress, line.trim(), Operation.resultError);
-                            out.printf("%s\n", Operation.resultError);
+                            out.println(Operation.resultError);
 
                             break;
                         }
                     }
 
                     // client connection needs to be closed
-                    try {
-                        out.close();
-                        in.close();
-                        client.close();
-                    } catch (Exception ignored) {
-                    }
+                    closeClientConnection(out, in, client);
                 }
             } catch (IOException e) {
                 e.printStackTrace();
